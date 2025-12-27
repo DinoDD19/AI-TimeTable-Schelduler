@@ -1,4 +1,4 @@
-// Constraint-based timetable scheduling algorithm
+// Constraint-based timetable scheduling algorithm with AI insights
 import { 
   Subject, 
   Faculty, 
@@ -6,11 +6,14 @@ import {
   TimeSlot, 
   WeekDay, 
   StudentPreferences, 
-  ScheduleEntry, 
+  EnhancedScheduleEntry, 
   GeneratedTimetable,
   Conflict,
-  SchedulerStats
+  SchedulerStats,
+  AIInsight,
+  SlotState
 } from '@/types/scheduler';
+import { aiInsightTemplates } from '@/data/dummyData';
 
 interface SchedulerConfig {
   subjects: Subject[];
@@ -23,6 +26,14 @@ interface SchedulerConfig {
 
 // Generate unique ID
 const generateId = () => Math.random().toString(36).substring(2, 9);
+
+// Create default slot state
+const createDefaultSlotState = (): SlotState => ({
+  isLocked: false,
+  isPreferred: false,
+  isAvoided: false,
+  hasConflict: false,
+});
 
 // Check if two time slots overlap
 const slotsOverlap = (slot1: TimeSlot, slot2: TimeSlot): boolean => {
@@ -47,19 +58,38 @@ const isFacultyAvailable = (faculty: Faculty, day: WeekDay, slot: TimeSlot): boo
   });
 };
 
+// Generate AI reason for slot selection
+const generateAIReason = (
+  subject: Subject,
+  slot: TimeSlot,
+  preferences: StudentPreferences
+): string => {
+  const slotHour = parseInt(slot.start.split(':')[0]);
+  
+  if (preferences.preferMorning && subject.difficulty === 'hard' && slotHour <= 11) {
+    return aiInsightTemplates.morningHard(subject.name);
+  }
+  
+  if (preferences.preferEvenDistribution) {
+    return aiInsightTemplates.evenDistribution(subject.name);
+  }
+  
+  return `📅 Best available slot for ${subject.name}`;
+};
+
 // Calculate slot score based on preferences
 const calculateSlotScore = (
   slot: TimeSlot, 
   subject: Subject, 
   preferences: StudentPreferences,
-  existingDayEntries: ScheduleEntry[],
+  existingDayEntries: EnhancedScheduleEntry[],
   subjects: Subject[]
 ): number => {
   let score = 100;
   
   const slotHour = parseInt(slot.start.split(':')[0]);
   
-  // Prefer morning for difficult subjects if user prefers morning
+  // Prefer morning for difficult subjects
   if (preferences.preferMorning && subject.difficulty === 'hard') {
     if (slotHour <= 11) score += 20;
     else score -= 10;
@@ -73,7 +103,6 @@ const calculateSlotScore = (
       if (entrySubject?.difficulty === 'hard') {
         const entryEnd = parseInt(entry.timeSlot.end.replace(':', ''));
         const entryStart = parseInt(entry.timeSlot.start.replace(':', ''));
-        // Check if consecutive
         if (Math.abs(slotIndex - entryEnd) <= 100 || Math.abs(slotIndex - entryStart) <= 100) {
           score -= 30;
         }
@@ -81,7 +110,7 @@ const calculateSlotScore = (
     });
   }
   
-  // Add some randomness for variety
+  // Add randomness for variety
   score += Math.random() * 10;
   
   return score;
@@ -91,8 +120,9 @@ const calculateSlotScore = (
 export const generateTimetable = (config: SchedulerConfig): GeneratedTimetable => {
   const { subjects, faculty, classrooms, preferences, workingDays, dailySlots } = config;
   
-  const entries: ScheduleEntry[] = [];
+  const entries: EnhancedScheduleEntry[] = [];
   const conflicts: Conflict[] = [];
+  const aiInsights: AIInsight[] = [];
   
   // Track usage
   const facultyDayHours: Map<string, Map<string, number>> = new Map();
@@ -130,7 +160,7 @@ export const generateTimetable = (config: SchedulerConfig): GeneratedTimetable =
     }
   });
   
-  // Sort by difficulty (schedule harder subjects first for better slots)
+  // Sort by difficulty (schedule harder subjects first)
   classRequirements.sort((a, b) => {
     const difficultyOrder = { hard: 0, medium: 1, easy: 2 };
     return difficultyOrder[a.subject.difficulty] - difficultyOrder[b.subject.difficulty];
@@ -143,40 +173,33 @@ export const generateTimetable = (config: SchedulerConfig): GeneratedTimetable =
     while (req.remaining > 0) {
       let bestSlot: { day: WeekDay; slot: TimeSlot; classroom: Classroom; score: number } | null = null;
       
-      // Try to distribute evenly across days
+      // Distribution tracking
       const dayCounts = new Map<WeekDay, number>();
       workingDays.forEach(day => {
         const count = entries.filter(e => e.subjectId === subject.id && e.day === day).length;
         dayCounts.set(day, count);
       });
       
-      // Sort days by count (prefer days with fewer classes of this subject)
       const sortedDays = [...workingDays].sort((a, b) => 
         (dayCounts.get(a) || 0) - (dayCounts.get(b) || 0)
       );
       
       for (const day of sortedDays) {
-        // Check faculty max hours
         const facultyHours = facultyDayHours.get(assignedFaculty.id)!.get(day) || 0;
         if (facultyHours >= assignedFaculty.maxHoursPerDay) continue;
         
         for (const slot of dailySlots) {
-          // Check faculty availability
           if (!isFacultyAvailable(assignedFaculty, day, slot)) continue;
           
-          // Check faculty not already scheduled
           const slotKey = `${slot.start}-${slot.end}`;
           if (facultySchedule.get(assignedFaculty.id)!.get(day)!.get(slotKey)) continue;
           
-          // Find available classroom
           for (const classroom of classrooms) {
             if (classroomSchedule.get(classroom.id)!.get(day)!.get(slotKey)) continue;
             
-            // Calculate score
             const existingDayEntries = entries.filter(e => e.day === day);
             const score = calculateSlotScore(slot, subject, preferences, existingDayEntries, subjects);
             
-            // Add bonus for even distribution
             if (preferences.preferEvenDistribution) {
               const dayCount = dayCounts.get(day) || 0;
               const bonus = Math.max(0, 20 - dayCount * 10);
@@ -193,16 +216,29 @@ export const generateTimetable = (config: SchedulerConfig): GeneratedTimetable =
       }
       
       if (bestSlot) {
-        const entry: ScheduleEntry = {
+        const entry: EnhancedScheduleEntry = {
           id: generateId(),
           subjectId: subject.id,
           facultyId: assignedFaculty.id,
           classroomId: bestSlot.classroom.id,
           day: bestSlot.day,
           timeSlot: bestSlot.slot,
+          slotState: createDefaultSlotState(),
+          aiReason: generateAIReason(subject, bestSlot.slot, preferences),
         };
         
         entries.push(entry);
+        
+        // Add AI insight for the first few entries
+        if (entries.length <= 5) {
+          aiInsights.push({
+            id: generateId(),
+            type: 'explanation',
+            message: entry.aiReason || '',
+            relatedEntryId: entry.id,
+            icon: subject.icon || '📚',
+          });
+        }
         
         // Update tracking
         const slotKey = `${bestSlot.slot.start}-${bestSlot.slot.end}`;
@@ -214,28 +250,46 @@ export const generateTimetable = (config: SchedulerConfig): GeneratedTimetable =
         
         req.remaining--;
       } else {
-        // Could not schedule - add conflict
         conflicts.push({
           type: 'availability',
           description: `Could not schedule ${subject.name} - no available slots`,
           entries: [],
+          severity: 'error',
         });
         break;
       }
     }
   }
   
-  // Calculate overall score
+  // Add general AI insights
+  if (preferences.preferMorning) {
+    aiInsights.push({
+      id: generateId(),
+      type: 'suggestion',
+      message: '🌅 Difficult subjects scheduled in morning for optimal focus',
+      icon: '💡',
+    });
+  }
+  
+  if (preferences.preferEvenDistribution) {
+    aiInsights.push({
+      id: generateId(),
+      type: 'suggestion',
+      message: '📊 Classes distributed evenly for balanced weekly workload',
+      icon: '⚖️',
+    });
+  }
+  
   const maxPossible = subjects.reduce((acc, s) => acc + s.hoursPerWeek, 0);
   const scheduled = entries.length;
   const score = (scheduled / maxPossible) * 100;
   
-  return { entries, conflicts, score };
+  return { entries, conflicts, score, aiInsights };
 };
 
 // Calculate scheduler statistics
 export const calculateStats = (
-  entries: ScheduleEntry[],
+  entries: EnhancedScheduleEntry[],
   config: SchedulerConfig
 ): SchedulerStats => {
   const { subjects, faculty, classrooms, workingDays, dailySlots } = config;
@@ -243,7 +297,6 @@ export const calculateStats = (
   const totalPossibleClasses = subjects.reduce((acc, s) => acc + s.hoursPerWeek, 0);
   const totalClasses = entries.length;
   
-  // Faculty utilization
   const totalFacultySlots = faculty.reduce((acc, f) => {
     let slots = 0;
     workingDays.forEach(day => {
@@ -257,30 +310,30 @@ export const calculateStats = (
   const usedFacultySlots = entries.length;
   const facultyUtilization = (usedFacultySlots / totalFacultySlots) * 100;
   
-  // Classroom utilization
   const totalClassroomSlots = classrooms.length * workingDays.length * dailySlots.length;
   const classroomUtilization = (entries.length / totalClassroomSlots) * 100;
   
-  // Preference score (simplified)
   const preferenceScore = totalClasses >= totalPossibleClasses ? 100 : (totalClasses / totalPossibleClasses) * 100;
+  
+  const conflictCount = entries.filter(e => e.slotState.hasConflict).length;
   
   return {
     totalClasses,
     facultyUtilization: Math.round(facultyUtilization * 10) / 10,
     classroomUtilization: Math.round(classroomUtilization * 10) / 10,
     preferenceScore: Math.round(preferenceScore * 10) / 10,
+    conflictCount,
   };
 };
 
 // Validate timetable for conflicts
 export const validateTimetable = (
-  entries: ScheduleEntry[],
+  entries: EnhancedScheduleEntry[],
   faculty: Faculty[],
   classrooms: Classroom[]
 ): Conflict[] => {
   const conflicts: Conflict[] = [];
   
-  // Check for faculty overlaps
   for (let i = 0; i < entries.length; i++) {
     for (let j = i + 1; j < entries.length; j++) {
       const e1 = entries[i];
@@ -289,25 +342,75 @@ export const validateTimetable = (
       if (e1.day !== e2.day) continue;
       if (!slotsOverlap(e1.timeSlot, e2.timeSlot)) continue;
       
-      // Same faculty at same time
       if (e1.facultyId === e2.facultyId) {
         conflicts.push({
           type: 'faculty_overlap',
           description: 'Faculty assigned to multiple classes at the same time',
           entries: [e1.id, e2.id],
+          severity: 'error',
         });
       }
       
-      // Same classroom at same time
       if (e1.classroomId === e2.classroomId) {
         conflicts.push({
           type: 'classroom_overlap',
           description: 'Classroom double-booked',
           entries: [e1.id, e2.id],
+          severity: 'error',
         });
       }
     }
   }
+  
+  return conflicts;
+};
+
+// Check if moving an entry would cause conflicts
+export const checkMoveConflicts = (
+  entry: EnhancedScheduleEntry,
+  newDay: WeekDay,
+  newSlot: TimeSlot,
+  newClassroomId: string,
+  existingEntries: EnhancedScheduleEntry[],
+  faculty: Faculty[]
+): Conflict[] => {
+  const conflicts: Conflict[] = [];
+  
+  // Check faculty availability
+  const assignedFaculty = faculty.find(f => f.id === entry.facultyId);
+  if (assignedFaculty && !isFacultyAvailable(assignedFaculty, newDay, newSlot)) {
+    conflicts.push({
+      type: 'availability',
+      description: `${assignedFaculty.name} is not available at this time`,
+      entries: [entry.id],
+      severity: 'error',
+    });
+  }
+  
+  // Check for overlaps with other entries
+  existingEntries.forEach(e => {
+    if (e.id === entry.id) return;
+    if (e.day !== newDay) return;
+    if (!slotsOverlap(e.timeSlot, newSlot)) return;
+    
+    if (e.facultyId === entry.facultyId) {
+      conflicts.push({
+        type: 'faculty_overlap',
+        description: 'Faculty already has a class at this time',
+        entries: [entry.id, e.id],
+        severity: 'error',
+      });
+    }
+    
+    if (e.classroomId === newClassroomId) {
+      conflicts.push({
+        type: 'classroom_overlap',
+        description: 'Classroom is already booked at this time',
+        entries: [entry.id, e.id],
+        severity: 'error',
+      });
+    }
+  });
   
   return conflicts;
 };

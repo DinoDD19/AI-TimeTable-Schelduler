@@ -1,4 +1,4 @@
-// Core types for the timetable scheduler
+// Enhanced types for the timetable scheduler with UX features
 
 export interface Subject {
   id: string;
@@ -7,6 +7,7 @@ export interface Subject {
   color: SubjectColor;
   hoursPerWeek: number;
   difficulty: 'easy' | 'medium' | 'hard';
+  icon?: string; // Emoji icon for the subject
 }
 
 export type SubjectColor = 
@@ -23,9 +24,10 @@ export interface Faculty {
   id: string;
   name: string;
   email: string;
-  subjects: string[]; // Subject IDs
+  subjects: string[];
   availability: Availability;
   maxHoursPerDay: number;
+  workload?: number; // Current workload percentage
 }
 
 export interface Availability {
@@ -33,7 +35,7 @@ export interface Availability {
 }
 
 export interface TimeSlot {
-  start: string; // HH:MM format
+  start: string;
   end: string;
 }
 
@@ -61,6 +63,21 @@ export interface ScheduleEntry {
 
 export type WeekDay = 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday';
 
+// Enhanced slot state for UX features
+export interface SlotState {
+  isLocked: boolean;      // User locked this slot
+  isPreferred: boolean;   // User prefers this slot
+  isAvoided: boolean;     // User wants to avoid this slot
+  hasConflict: boolean;   // There's a scheduling conflict
+  conflictReason?: string;
+}
+
+// Enhanced schedule entry with slot state
+export interface EnhancedScheduleEntry extends ScheduleEntry {
+  slotState: SlotState;
+  aiReason?: string; // Why AI chose this slot
+}
+
 export interface TimetableConfig {
   subjects: Subject[];
   faculty: Faculty[];
@@ -71,15 +88,26 @@ export interface TimetableConfig {
 }
 
 export interface GeneratedTimetable {
-  entries: ScheduleEntry[];
+  entries: EnhancedScheduleEntry[];
   conflicts: Conflict[];
   score: number;
+  aiInsights: AIInsight[];
 }
 
 export interface Conflict {
-  type: 'faculty_overlap' | 'classroom_overlap' | 'availability' | 'capacity';
+  type: 'faculty_overlap' | 'classroom_overlap' | 'availability' | 'capacity' | 'preference_violation';
   description: string;
-  entries: string[]; // Entry IDs involved
+  entries: string[];
+  severity: 'warning' | 'error';
+}
+
+// AI insights for explaining scheduling decisions
+export interface AIInsight {
+  id: string;
+  type: 'suggestion' | 'explanation' | 'warning';
+  message: string;
+  relatedEntryId?: string;
+  icon: string;
 }
 
 export interface SchedulerStats {
@@ -87,4 +115,34 @@ export interface SchedulerStats {
   facultyUtilization: number;
   classroomUtilization: number;
   preferenceScore: number;
+  conflictCount: number;
+}
+
+// User roles for different views
+export type UserRole = 'student' | 'faculty' | 'admin';
+
+// View modes
+export type ViewMode = 'daily' | 'weekly' | 'calendar';
+
+// Undo/redo history item
+export interface HistoryItem {
+  id: string;
+  timestamp: number;
+  action: string;
+  entries: EnhancedScheduleEntry[];
+  description: string;
+}
+
+// Drag and drop types
+export interface DragItem {
+  type: 'subject' | 'entry';
+  id: string;
+  sourceDay?: WeekDay;
+  sourceSlot?: TimeSlot;
+}
+
+export interface DropResult {
+  day: WeekDay;
+  slot: TimeSlot;
+  classroomId: string;
 }
