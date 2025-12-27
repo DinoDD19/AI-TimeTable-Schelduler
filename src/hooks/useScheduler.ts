@@ -6,9 +6,12 @@ import {
   TimeSlot, 
   WeekDay, 
   StudentPreferences,
-  ScheduleEntry,
+  EnhancedScheduleEntry,
   GeneratedTimetable,
-  SchedulerStats
+  SchedulerStats,
+  UserRole,
+  ViewMode,
+  SlotState
 } from '@/types/scheduler';
 import { 
   dummySubjects, 
@@ -18,7 +21,8 @@ import {
   defaultWorkingDays,
   defaultPreferences 
 } from '@/data/dummyData';
-import { generateTimetable, calculateStats, validateTimetable } from '@/lib/scheduler';
+import { generateTimetable, calculateStats, validateTimetable, checkMoveConflicts } from '@/lib/scheduler';
+import { useUndoRedo } from './useUndoRedo';
 
 export const useScheduler = () => {
   const [subjects, setSubjects] = useState<Subject[]>(dummySubjects);
@@ -30,11 +34,25 @@ export const useScheduler = () => {
   const [timetable, setTimetable] = useState<GeneratedTimetable | null>(null);
   const [stats, setStats] = useState<SchedulerStats | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [userRole, setUserRole] = useState<UserRole>('admin');
+  const [viewMode, setViewMode] = useState<ViewMode>('weekly');
+  const [selectedDay, setSelectedDay] = useState<WeekDay>('monday');
+
+  // Undo/redo functionality
+  const { 
+    pushState, 
+    undo: undoHistory, 
+    redo: redoHistory, 
+    canUndo, 
+    canRedo,
+    previousAction,
+    nextAction 
+  } = useUndoRedo();
 
   const generate = useCallback(() => {
     setIsGenerating(true);
     
-    // Simulate async operation for UX
+    // Simulate async operation for smooth UX
     setTimeout(() => {
       const config = {
         subjects,
@@ -51,10 +69,13 @@ export const useScheduler = () => {
       setTimetable(result);
       setStats(calculatedStats);
       setIsGenerating(false);
-    }, 800);
-  }, [subjects, faculty, classrooms, preferences, workingDays, dailySlots]);
+      
+      // Push initial state to history
+      pushState(result.entries, 'generate', 'Generated new timetable');
+    }, 1200); // Longer for animation effect
+  }, [subjects, faculty, classrooms, preferences, workingDays, dailySlots, pushState]);
 
-  const updateEntry = useCallback((entryId: string, updates: Partial<ScheduleEntry>) => {
+  const updateEntry = useCallback((entryId: string, updates: Partial<EnhancedScheduleEntry>) => {
     if (!timetable) return;
     
     const updatedEntries = timetable.entries.map(entry =>
@@ -63,12 +84,101 @@ export const useScheduler = () => {
     
     const conflicts = validateTimetable(updatedEntries, faculty, classrooms);
     
+    // Mark entries with conflicts
+    const entriesWithConflicts = updatedEntries.map(entry => ({
+      ...entry,
+      slotState: {
+        ...entry.slotState,
+        hasConflict: conflicts.some(c => c.entries.includes(entry.id)),
+        conflictReason: conflicts.find(c => c.entries.includes(entry.id))?.description,
+      },
+    }));
+    
+    setTimetable({
+      ...timetable,
+      entries: entriesWithConflicts,
+      conflicts,
+    });
+    
+    pushState(entriesWithConflicts, 'update', 'Updated class slot');
+  }, [timetable, faculty, classrooms, pushState]);
+
+  const moveEntry = useCallback((
+    entryId: string, 
+    newDay: WeekDay, 
+    newSlot: TimeSlot,
+    newClassroomId?: string
+  ) => {
+    if (!timetable) return { success: false, conflicts: [] };
+    
+    const entry = timetable.entries.find(e => e.id === entryId);
+    if (!entry) return { success: false, conflicts: [] };
+    
+    // Check for conflicts before moving
+    const moveConflicts = checkMoveConflicts(
+      entry,
+      newDay,
+      newSlot,
+      newClassroomId || entry.classroomId,
+      timetable.entries,
+      faculty
+    );
+    
+    if (moveConflicts.length > 0) {
+      return { success: false, conflicts: moveConflicts };
+    }
+    
+    // Proceed with move
+    const updatedEntries = timetable.entries.map(e =>
+      e.id === entryId 
+        ? { 
+            ...e, 
+            day: newDay, 
+            timeSlot: newSlot,
+            classroomId: newClassroomId || e.classroomId,
+            aiReason: '✋ Manually moved by user',
+          } 
+        : e
+    );
+    
     setTimetable({
       ...timetable,
       entries: updatedEntries,
-      conflicts,
     });
-  }, [timetable, faculty, classrooms]);
+    
+    const config = { subjects, faculty, classrooms, preferences, workingDays, dailySlots };
+    setStats(calculateStats(updatedEntries, config));
+    
+    pushState(updatedEntries, 'move', 'Moved class to new slot');
+    
+    return { success: true, conflicts: [] };
+  }, [timetable, faculty, subjects, classrooms, preferences, workingDays, dailySlots, pushState]);
+
+  const toggleSlotState = useCallback((
+    entryId: string, 
+    stateKey: keyof SlotState
+  ) => {
+    if (!timetable) return;
+    
+    const updatedEntries = timetable.entries.map(entry =>
+      entry.id === entryId 
+        ? { 
+            ...entry, 
+            slotState: { 
+              ...entry.slotState, 
+              [stateKey]: !entry.slotState[stateKey] 
+            } 
+          } 
+        : entry
+    );
+    
+    setTimetable({
+      ...timetable,
+      entries: updatedEntries,
+    });
+    
+    pushState(updatedEntries, 'toggle', `Toggled ${stateKey} state`);
+  }, [timetable, pushState]);
 
   const deleteEntry = useCallback((entryId: string) => {
     if (!timetable) return;
@@ -82,10 +192,35 @@ export const useScheduler = () => {
       conflicts,
     });
     
-    // Recalculate stats
     const config = { subjects, faculty, classrooms, preferences, workingDays, dailySlots };
     setStats(calculateStats(updatedEntries, config));
-  }, [timetable, subjects, faculty, classrooms, preferences, workingDays, dailySlots]);
+    
+    pushState(updatedEntries, 'delete', 'Deleted class');
+  }, [timetable, subjects, faculty, classrooms, preferences, workingDays, dailySlots, pushState]);
+
+  const undo = useCallback(() => {
+    const previousEntries = undoHistory();
+    if (previousEntries && timetable) {
+      setTimetable({
+        ...timetable,
+        entries: previousEntries,
+      });
+      const config = { subjects, faculty, classrooms, preferences, workingDays, dailySlots };
+      setStats(calculateStats(previousEntries, config));
+    }
+  }, [undoHistory, timetable, subjects, faculty, classrooms, preferences, workingDays, dailySlots]);
+
+  const redo = useCallback(() => {
+    const nextEntries = redoHistory();
+    if (nextEntries && timetable) {
+      setTimetable({
+        ...timetable,
+        entries: nextEntries,
+      });
+      const config = { subjects, faculty, classrooms, preferences, workingDays, dailySlots };
+      setStats(calculateStats(nextEntries, config));
+    }
+  }, [redoHistory, timetable, subjects, faculty, classrooms, preferences, workingDays, dailySlots]);
 
   const addSubject = useCallback((subject: Subject) => {
     setSubjects(prev => [...prev, subject]);
@@ -131,10 +266,23 @@ export const useScheduler = () => {
     timetable,
     stats,
     isGenerating,
+    userRole,
+    viewMode,
+    selectedDay,
+    
+    // Undo/redo
+    canUndo,
+    canRedo,
+    previousAction,
+    nextAction,
+    undo,
+    redo,
     
     // Actions
     generate,
     updateEntry,
+    moveEntry,
+    toggleSlotState,
     deleteEntry,
     addSubject,
     removeSubject,
@@ -144,5 +292,8 @@ export const useScheduler = () => {
     removeClassroom,
     updatePreferences,
     clearTimetable,
+    setUserRole,
+    setViewMode,
+    setSelectedDay,
   };
 };
